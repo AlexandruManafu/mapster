@@ -108,36 +108,37 @@ public struct GeoFeature : BaseShape
     public GeoFeature(ReadOnlySpan<Coordinate> c, MapFeatureData feature)
     {
         IsPolygon = feature.Type == GeometryType.Polygon;
-        var naturalKey = feature.Properties.FirstOrDefault(x => x.Key == "natural").Value;
+        var naturalKey = feature.Properties.FirstOrDefault(x => x.Key == FeatureType.Natural).Value;
+        
         Type = GeoFeatureType.Unknown;
-        if (naturalKey != null)
+        if (naturalKey.Item2 != FeatureSubType.Unknown)
         {
-            if (naturalKey == "fell" ||
-                naturalKey == "grassland" ||
-                naturalKey == "heath" ||
-                naturalKey == "moor" ||
-                naturalKey == "scrub" ||
-                naturalKey == "wetland")
+            if (naturalKey.Item2 == FeatureSubType.Grassland ||
+                naturalKey.Item2 == FeatureSubType.Scrub ||
+                naturalKey.Item2 == FeatureSubType.Heath ||
+                naturalKey.Item2 == FeatureSubType.Fell ||
+                naturalKey.Item2 == FeatureSubType.Moor ||
+                naturalKey.Item2 == FeatureSubType.Wetland)
             {
                 Type = GeoFeatureType.Plain;
             }
-            else if (naturalKey == "wood" ||
-                     naturalKey == "tree_row")
+            else if (naturalKey.Item2 == FeatureSubType.TreeRow ||
+                     naturalKey.Item2 == FeatureSubType.Wood)
             {
                 Type = GeoFeatureType.Forest;
             }
-            else if (naturalKey == "bare_rock" ||
-                     naturalKey == "rock" ||
-                     naturalKey == "scree")
+            else if (naturalKey.Item2 == FeatureSubType.BareRock ||
+                     naturalKey.Item2 == FeatureSubType.Scree ||
+                     naturalKey.Item2 == FeatureSubType.Rock)
             {
                 Type = GeoFeatureType.Mountains;
             }
-            else if (naturalKey == "beach" ||
-                     naturalKey == "sand")
+            else if (naturalKey.Item2 == FeatureSubType.Sand ||
+                     naturalKey.Item2 == FeatureSubType.Beach )
             {
                 Type = GeoFeatureType.Desert;
             }
-            else if (naturalKey == "water")
+            else if (naturalKey.Item2 == FeatureSubType.Water)
             {
                 Type = GeoFeatureType.Water;
             }
@@ -202,8 +203,11 @@ public struct PopulatedPlace : BaseShape
         for (var i = 0; i < c.Length; i++)
             ScreenCoordinates[i] = new PointF((float)MercatorProjection.lonToX(c[i].Longitude),
                 (float)MercatorProjection.latToY(c[i].Latitude));
+        
+        Name = "";
+        ShouldRender = false;
+        /*
         var name = feature.Properties.FirstOrDefault(x => x.Key == "name").Value;
-
         if (feature.Label.IsEmpty)
         {
             ShouldRender = false;
@@ -214,6 +218,7 @@ public struct PopulatedPlace : BaseShape
             Name = string.IsNullOrWhiteSpace(name) ? feature.Label.ToString() : name;
             ShouldRender = true;
         }
+        */
     }
 
     public static bool ShouldBePopulatedPlace(MapFeatureData feature)
@@ -224,10 +229,12 @@ public struct PopulatedPlace : BaseShape
             return false;
         }
         foreach (var entry in feature.Properties)
-            if (entry.Key.StartsWith("place"))
+            if (entry.Key == FeatureType.Place)
             {
-                if (entry.Value.StartsWith("city") || entry.Value.StartsWith("town") ||
-                    entry.Value.StartsWith("locality") || entry.Value.StartsWith("hamlet"))
+                if (entry.Value.Item2 == FeatureSubType.Town ||
+                    entry.Value.Item2 == FeatureSubType.Hamlet ||
+                    entry.Value.Item2 == FeatureSubType.Locality ||
+                    entry.Value.Item2 == FeatureSubType.City )
                 {
                     return true;
                 }
@@ -264,11 +271,11 @@ public struct Border : BaseShape
         var foundLevel = false;
         foreach (var entry in feature.Properties)
         {
-            if (entry.Key.StartsWith("boundary") && entry.Value.StartsWith("administrative"))
+            if (entry.Key == FeatureType.Boundary && entry.Value.Item2 == FeatureSubType.Administrative)
             {
                 foundBoundary = true;
             }
-            if (entry.Key.StartsWith("admin_level") && entry.Value == "2")
+            if (entry.Key == FeatureType.AdminLevel && entry.Value.Item2 == FeatureSubType.Two)
             {
                 foundLevel = true;
             }

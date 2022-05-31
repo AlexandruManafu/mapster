@@ -22,22 +22,20 @@ public static class Program
             switch (blob.Type)
             {
                 case BlobType.Primitive:
-                    {
-                        var primitiveBlock = blob.ToPrimitiveBlock();
-                        foreach (var primitiveGroup in primitiveBlock)
-                            switch (primitiveGroup.ContainedType)
-                            {
-                                case PrimitiveGroup.ElementType.Node:
-                                    foreach (var node in primitiveGroup) nodes[node.Id] = (AbstractNode)node;
-                                    break;
+                    var primitiveBlock = blob.ToPrimitiveBlock();
+                    foreach (var primitiveGroup in primitiveBlock)
+                        switch (primitiveGroup.ContainedType)
+                        {
+                            case PrimitiveGroup.ElementType.Node:
+                                foreach (var node in primitiveGroup) nodes[node.Id] = (AbstractNode)node;
+                                break;
 
-                                case PrimitiveGroup.ElementType.Way:
-                                    foreach (var way in primitiveGroup) ways.Add((Way)way);
-                                    break;
-                            }
+                            case PrimitiveGroup.ElementType.Way:
+                                foreach (var way in primitiveGroup) ways.Add((Way)way);
+                                break;
+                        }
 
-                        break;
-                    }
+                    break;
             }
         });
 
@@ -70,7 +68,6 @@ public static class Program
     {
         var usedNodes = new HashSet<long>();
 
-        long featureIdCounter = -1;
         var featureIds = new List<long>();
         // var geometryTypes = new List<GeometryType>();
         // var coordinates = new List<(long id, (int offset, List<Coordinate> coordinates) values)>();
@@ -95,10 +92,8 @@ public static class Program
 
         foreach (var (tileId, _) in mapData.Tiles)
         {
-            // FIXME: Not thread safe
             usedNodes.Clear();
 
-            // FIXME: Not thread safe
             featureIds.Clear();
             labels.Clear();
 
@@ -109,16 +104,15 @@ public static class Program
 
             foreach (var way in mapData.Ways)
             {
-                var featureId = Interlocked.Increment(ref featureIdCounter);
-
                 var featureData = new FeatureData
                 {
-                    Id = featureId,
+                    Id = way.Id,
                     Coordinates = (totalCoordinateCount, new List<Coordinate>()),
                     PropertyKeys = (totalPropertyCount, new List<string>(way.Tags.Count)),
                     PropertyValues = (totalPropertyCount, new List<string>(way.Tags.Count))
                 };
 
+                featureIds.Add(way.Id);
                 var geometryType = GeometryType.Polyline;
 
                 labels.Add(-1);
@@ -135,11 +129,6 @@ public static class Program
                 foreach (var nodeId in way.NodeIds)
                 {
                     var node = mapData.Nodes[nodeId];
-                    if (TiligSystem.GetTile(new Coordinate(node.Latitude, node.Longitude)) != tileId)
-                    {
-                        continue;
-                    }
-
                     usedNodes.Add(nodeId);
 
                     foreach (var (key, value) in node.Tags)
@@ -152,14 +141,6 @@ public static class Program
                     }
 
                     featureData.Coordinates.coordinates.Add(new Coordinate(node.Latitude, node.Longitude));
-                }
-
-                // This feature is not located within this tile, skip it
-                if (featureData.Coordinates.coordinates.Count == 0)
-                {
-                    // Remove the last item since we added it preemptively
-                    labels.RemoveAt(labels.Count - 1);
-                    continue;
                 }
 
                 if (featureData.Coordinates.coordinates[0] == featureData.Coordinates.coordinates[^1])
@@ -176,21 +157,15 @@ public static class Program
                     throw new InvalidDataContractException("Property keys and values should have the same count");
                 }
 
-                featureIds.Add(featureId);
-                featuresData.Add(featureId, featureData);
+                featuresData.Add(way.Id, featureData);
             }
 
             foreach (var (nodeId, node) in mapData.Nodes.Where(n => !usedNodes.Contains(n.Key)))
             {
-                if (TiligSystem.GetTile(new Coordinate(node.Latitude, node.Longitude)) != tileId)
-                {
-                    continue;
-                }
+                featureIds.Add(nodeId);
 
-                var featureId = Interlocked.Increment(ref featureIdCounter);
-
-                var featurePropKeys = new List<string>();
-                var featurePropValues = new List<string>();
+                var FeatureTypeKeys = new List<string>();
+                var FeatureTypeValues = new List<string>();
 
                 labels.Add(-1);
                 for (var i = 0; i < node.Tags.Count; ++i)
@@ -198,33 +173,31 @@ public static class Program
                     var tag = node.Tags[i];
                     if (tag.Key == "name")
                     {
-                        labels[^1] = totalPropertyCount * 2 + featurePropKeys.Count * 2 + 1;
+                        labels[^1] = totalPropertyCount * 2 + FeatureTypeKeys.Count * 2 + 1;
                     }
 
-                    featurePropKeys.Add(tag.Key);
-                    featurePropValues.Add(tag.Value);
+                    FeatureTypeKeys.Add(tag.Key);
+                    FeatureTypeValues.Add(tag.Value);
                 }
 
-                if (featurePropKeys.Count != featurePropValues.Count)
+                if (FeatureTypeKeys.Count != FeatureTypeValues.Count)
                 {
                     throw new InvalidDataContractException("Property keys and values should have the same count");
                 }
 
-                var fData = new FeatureData
+                featuresData.Add(nodeId, new FeatureData
                 {
-                    Id = featureId,
+                    Id = nodeId,
                     GeometryType = (byte)GeometryType.Point,
                     Coordinates = (totalCoordinateCount, new List<Coordinate>
                     {
                         new Coordinate(node.Latitude, node.Longitude)
                     }),
-                    PropertyKeys = (totalPropertyCount, featurePropKeys),
-                    PropertyValues = (totalPropertyCount, featurePropValues)
-                };
-                featuresData.Add(featureId, fData);
-                featureIds.Add(featureId);
+                    PropertyKeys = (totalPropertyCount, FeatureTypeKeys),
+                    PropertyValues = (totalPropertyCount, FeatureTypeValues)
+                });
 
-                totalPropertyCount += featurePropKeys.Count;
+                totalPropertyCount += FeatureTypeKeys.Count;
                 ++totalCoordinateCount;
             }
 
@@ -236,19 +209,13 @@ public static class Program
             fileWriter.Write(totalPropertyCount * 2); // TileBlockHeader: StringCount
             fileWriter.Write(0); //TileBlockHeader: CharactersCount
 
-            // Take note of the offset within the file for this field
             var coPosition = fileWriter.BaseStream.Position;
-            // Write a placeholder value to reserve space in the file
             fileWriter.Write((long)0); // TileBlockHeader: CoordinatesOffsetInBytes (placeholder)
 
-            // Take note of the offset within the file for this field
             var soPosition = fileWriter.BaseStream.Position;
-            // Write a placeholder value to reserve space in the file
             fileWriter.Write((long)0); // TileBlockHeader: StringsOffsetInBytes (placeholder)
 
-            // Take note of the offset within the file for this field
             var choPosition = fileWriter.BaseStream.Position;
-            // Write a placeholder value to reserve space in the file
             fileWriter.Write((long)0); // TileBlockHeader: CharactersOffsetInBytes (placeholder)
 
             // Write MapFeatures
@@ -265,14 +232,13 @@ public static class Program
                 fileWriter.Write(featureData.PropertyKeys.keys.Count); // MapFeature: PropertyCount
             }
 
-            // Record the current position in the stream
             var currentPosition = fileWriter.BaseStream.Position;
             // Seek back in the file to the position of the field
-            fileWriter.BaseStream.Position = coPosition;
+            fileWriter.Seek((int)coPosition, SeekOrigin.Begin);
             // Write the recorded 'currentPosition'
             fileWriter.Write(currentPosition); // TileBlockHeader: CoordinatesOffsetInBytes
             // And seek forward to continue updating the file
-            fileWriter.BaseStream.Position = currentPosition;
+            fileWriter.Seek((int)currentPosition, SeekOrigin.Begin);
             foreach (var t in featureIds)
             {
                 var featureData = featuresData[t];
@@ -287,11 +253,78 @@ public static class Program
             // Record the current position in the stream
             currentPosition = fileWriter.BaseStream.Position;
             // Seek back in the file to the position of the field
-            fileWriter.BaseStream.Position = soPosition;
+            fileWriter.Seek((int)soPosition, SeekOrigin.Begin);
             // Write the recorded 'currentPosition'
             fileWriter.Write(currentPosition); // TileBlockHeader: StringsOffsetInBytes
             // And seek forward to continue updating the file
-            fileWriter.BaseStream.Position = currentPosition;
+            fileWriter.Seek((int)currentPosition, SeekOrigin.Begin);
+
+            var typeDict = new Dictionary<string, FeatureType>
+            {
+                { "natural", FeatureType.Natural },
+                { "place", FeatureType.Place },
+                { "water", FeatureType.Water },
+                { "railway", FeatureType.Railway },
+                { "highway", FeatureType.Highway },
+                { "landuse", FeatureType.Landuse },
+                { "building", FeatureType.Building },
+                { "leisure", FeatureType.Leisure },
+                { "amenity", FeatureType.Amenity },
+                { "boundary", FeatureType.Boundary },
+                { "admin_level", FeatureType.AdminLevel },
+            
+            };
+            var subTypeDict = new Dictionary<string, FeatureSubType>
+            {
+                { "square", FeatureSubType.Square },
+                { "construction", FeatureSubType.Construction },
+                { "fell", FeatureSubType.Fell },
+                { "reservoir", FeatureSubType.Reservoir },
+                { "meadow", FeatureSubType.Meadow },
+                { "secondary", FeatureSubType.Secondary },
+                { "city", FeatureSubType.City },
+                { "rock", FeatureSubType.Rock },
+                { "water", FeatureSubType.Water },
+                { "scree", FeatureSubType.Scree },
+                { "residential", FeatureSubType.Residential },
+                { "basin", FeatureSubType.Basin },
+                { "grassland", FeatureSubType.Grassland },
+                { "locality", FeatureSubType.Locality },
+                { "cemetery", FeatureSubType.Cemetery },
+                { "farm", FeatureSubType.Farm },
+                { "industrial", FeatureSubType.Industrial },
+                { "primary", FeatureSubType.Primary },
+                { "tree_row", FeatureSubType.TreeRow },
+                { "forest", FeatureSubType.Forest },
+                { "wood", FeatureSubType.Wood },
+                { "moor", FeatureSubType.Moor },
+                { "greenfield", FeatureSubType.Greenfield },
+                { "unclassified", FeatureSubType.Unclassified },
+                { "bare_rock", FeatureSubType.BareRock },
+                { "trunk", FeatureSubType.Trunk },
+                { "brownfield", FeatureSubType.Brownfield },
+                { "road", FeatureSubType.Road },
+                { "orchard", FeatureSubType.Orchard },
+                { "scrub", FeatureSubType.Scrub },
+                { "allotments", FeatureSubType.Allotments },
+                { "administrative", FeatureSubType.Administrative },
+                { "recreation_ground", FeatureSubType.RecreationGround },
+                { "natural", FeatureSubType.Natural },
+                { "heath", FeatureSubType.Heath },
+                { "winter_sports", FeatureSubType.WinterSports },
+                { "military", FeatureSubType.Military },
+                { "quarry", FeatureSubType.Quarry },
+                { "grass", FeatureSubType.Grass },
+                { "2", FeatureSubType.Two },
+                { "tertiary", FeatureSubType.Tertiary },
+                { "commercial", FeatureSubType.Commercial },
+                { "town", FeatureSubType.Town },
+                { "hamlet", FeatureSubType.Hamlet },
+                { "wetland", FeatureSubType.Wetland },
+                { "sand", FeatureSubType.Sand },
+		        { "motorway", FeatureSubType.Motorway },
+                { "beach", FeatureSubType.Beach }
+            };
 
             var stringOffset = 0;
             foreach (var t in featureIds)
@@ -299,48 +332,62 @@ public static class Program
                 var featureData = featuresData[t];
                 for (var i = 0; i < featureData.PropertyKeys.keys.Count; ++i)
                 {
-                    ReadOnlySpan<char> k = featureData.PropertyKeys.keys[i];
-                    ReadOnlySpan<char> v = featureData.PropertyValues.values[i];
+                    // Add 1 to the offset for keys
+                    string v = featureData.PropertyValues.values[i];
 
-                    fileWriter.Write(stringOffset); // StringEntry: Offset
-                    fileWriter.Write(k.Length); // StringEntry: Length
-                    stringOffset += k.Length;
+                    fileWriter.Write(stringOffset);
+                    fileWriter.Write(1);
+                    stringOffset += 1;
 
-                    fileWriter.Write(stringOffset); // StringEntry: Offset
-                    fileWriter.Write(v.Length); // StringEntry: Length
-                    stringOffset += v.Length;
+                    // If sub-property exists in enum, add 1 to offset
+                    // otherwise, add the whole string
+                    if (SubPropToEnumCode(subTypeDict, v) == FeatureSubType.Unknown)
+                    {
+                        fileWriter.Write(stringOffset);
+                        fileWriter.Write(v.Length);
+                        stringOffset += v.Length;
+                    }
+                    else
+                    {
+                        fileWriter.Write(stringOffset);
+                        fileWriter.Write(1);
+                        stringOffset += 1;
+                    }
                 }
             }
 
             // Record the current position in the stream
             currentPosition = fileWriter.BaseStream.Position;
             // Seek back in the file to the position of the field
-            fileWriter.BaseStream.Position = choPosition;
+            fileWriter.Seek((int)choPosition, SeekOrigin.Begin);
             // Write the recorded 'currentPosition'
             fileWriter.Write(currentPosition); // TileBlockHeader: CharactersOffsetInBytes
             // And seek forward to continue updating the file
-            fileWriter.BaseStream.Position = currentPosition;
+            fileWriter.Seek((int)currentPosition, SeekOrigin.Begin);
             foreach (var t in featureIds)
             {
                 var featureData = featuresData[t];
                 for (var i = 0; i < featureData.PropertyKeys.keys.Count; ++i)
                 {
-                    ReadOnlySpan<char> k = featureData.PropertyKeys.keys[i];
-                    foreach (var c in k)
+                    string k = featureData.PropertyKeys.keys[i];
+                    fileWriter.Write((short)PropToEnumCode(typeDict, k));
+                    
+                    string v = featureData.PropertyValues.values[i];
+                    if (SubPropToEnumCode(subTypeDict, v) != FeatureSubType.Unknown)
                     {
-                        fileWriter.Write((short)c);
+                        fileWriter.Write((short)SubPropToEnumCode(subTypeDict, v));
                     }
-
-                    ReadOnlySpan<char> v = featureData.PropertyValues.values[i];
-                    foreach (var c in v)
+                    else
                     {
-                        fileWriter.Write((short)c);
+                        foreach (var c in v)
+                        {
+                            fileWriter.Write((short)c);
+                        }
                     }
                 }
             }
         }
 
-        // Seek to the beginning of the file, just before the first TileHeaderEntry
         fileWriter.Seek(Marshal.SizeOf<FileHeader>(), SeekOrigin.Begin);
         foreach (var (tileId, offset) in offsets)
         {
@@ -349,6 +396,21 @@ public static class Program
         }
 
         fileWriter.Flush();
+    }
+    
+    private static FeatureType PropToEnumCode(Dictionary<string, FeatureType> dict, string propName)
+    {
+        if (dict.ContainsKey(propName))
+            return dict[propName];
+        return FeatureType.Unknown;
+    }
+    
+    private static FeatureSubType SubPropToEnumCode(Dictionary<string, FeatureSubType> dict,string subPropName)
+    {
+        if (dict.ContainsKey(subPropName))
+            return dict[subPropName];
+
+        return FeatureSubType.Unknown;
     }
 
     public static void Main(string[] args)
